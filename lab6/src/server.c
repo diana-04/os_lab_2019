@@ -13,30 +13,21 @@
 
 #include "pthread.h"
 
+#define FILENAME "servers.txt"
+
 struct FactorialArgs {
   uint64_t begin;
   uint64_t end;
   uint64_t mod;
 };
 
-uint64_t MultModulo(uint64_t a, uint64_t b, uint64_t mod) {
-  uint64_t result = 0;
-  a = a % mod;
-  while (b > 0) {
-    if (b % 2 == 1)
-      result = (result + a) % mod;
-    a = (a * 2) % mod;
-    b /= 2;
-  }
-
-  return result % mod;
-}
-
 uint64_t Factorial(const struct FactorialArgs *args) {
   uint64_t ans = 1;
-
-  // TODO: your code here
-
+  for(uint64_t i = args->begin; i < args->end; i++)
+  {
+    ans = (ans * i) % args->mod;
+  }
+  printf("thread result %lu\n", ans);
   return ans;
 }
 
@@ -67,11 +58,9 @@ int main(int argc, char **argv) {
       switch (option_index) {
       case 0:
         port = atoi(optarg);
-        // TODO: your code here
         break;
       case 1:
         tnum = atoi(optarg);
-        // TODO: your code here
         break;
       default:
         printf("Index %d is out of options\n", option_index);
@@ -89,6 +78,12 @@ int main(int argc, char **argv) {
   if (port == -1 || tnum == -1) {
     fprintf(stderr, "Using: %s --port 20001 --tnum 4\n", argv[0]);
     return 1;
+  }
+
+  FILE *file;
+  if ((file = fopen(FILENAME, "a")) != NULL) {
+    fprintf(file, "%d 127.0.0.1\n", port);
+    fclose(file);
   }
 
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -118,8 +113,8 @@ int main(int argc, char **argv) {
   }
 
   printf("Server listening at %d\n", port);
-
-  while (true) {
+  int64_t flag = 0;
+  while (flag != -1) {
     struct sockaddr_in client;
     socklen_t client_len = sizeof(client);
     int client_fd = accept(server_fd, (struct sockaddr *)&client, &client_len);
@@ -144,8 +139,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Client send wrong data format\n");
         break;
       }
-
-      pthread_t threads[tnum];
+      memcpy(&flag, from_client, sizeof(int64_t));
+      if(flag == -1) {
+        break;
+      }
+      pthread_t *threads = (pthread_t *)malloc(tnum * sizeof(pthread_t));
 
       uint64_t begin = 0;
       uint64_t end = 0;
@@ -154,34 +152,38 @@ int main(int argc, char **argv) {
       memcpy(&end, from_client + sizeof(uint64_t), sizeof(uint64_t));
       memcpy(&mod, from_client + 2 * sizeof(uint64_t), sizeof(uint64_t));
 
-      fprintf(stdout, "Receive: %llu %llu %llu\n", begin, end, mod);
+      fprintf(stdout, "Receive: %lu %lu %lu\n", begin, end, mod);
 
-      struct FactorialArgs args[tnum];
+      struct FactorialArgs *args = (struct FactorialArgs *)malloc(tnum * sizeof(struct FactorialArgs));
       for (uint32_t i = 0; i < tnum; i++) {
-        // TODO: parallel somehow
-        args[i].begin = 1;
-        args[i].end = 1;
+        args[i].begin = i * (end - begin) / tnum + begin;
+        if(i != tnum - 1) {          
+	        args[i].end = (i + 1) * (end - begin) / tnum + begin;        
+	      }        
+	      else {          
+	        args[i].end = end;        
+	      }
         args[i].mod = mod;
-
-        if (pthread_create(&threads[i], NULL, ThreadFactorial,
-                           (void *)&args[i])) {
+        if (pthread_create(&threads[i], NULL, ThreadFactorial, (void *)&args[i])) {
           printf("Error: pthread_create failed!\n");
           return 1;
         }
       }
 
-      uint64_t total = 1;
+      uint64_t result = 1;
+      uint64_t buf;
       for (uint32_t i = 0; i < tnum; i++) {
-        uint64_t result = 0;
-        pthread_join(threads[i], (void **)&result);
-        total = MultModulo(total, result, mod);
+        pthread_join(threads[i], (void **)&buf);
+        result = (result * buf) % mod;
       }
+      if (threads) {
+        free(threads);
+      }
+      printf("Result: %lu\n", result);
 
-      printf("Total: %llu\n", total);
-
-      char buffer[sizeof(total)];
-      memcpy(buffer, &total, sizeof(total));
-      err = send(client_fd, buffer, sizeof(total), 0);
+      char buffer[sizeof(result)];
+      memcpy(buffer, &result, sizeof(result));
+      err = send(client_fd, buffer, sizeof(result), 0);
       if (err < 0) {
         fprintf(stderr, "Can't send data to client\n");
         break;
